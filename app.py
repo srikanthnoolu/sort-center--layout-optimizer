@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw
 import io
 import json
 import re
+import time
 from google import genai
 
 # Streamlit Page Config
@@ -25,7 +26,6 @@ def annotate_layout_image(image, highlights):
     draw = ImageDraw.Draw(annotated_img)
     w, h = image.size
 
-    # Color palette for highlights
     colors = [
         "#FF3333",  # Red - Violations / Bottlenecks
         "#FF9900",  # Orange - Buffers & Clearances
@@ -47,20 +47,44 @@ def annotate_layout_image(image, highlights):
 
             color = colors[idx % len(colors)]
             
-            # Draw thick bounding box (4px width)
             for offset in range(4):
                 draw.rectangle(
                     [left - offset, top - offset, right + offset, bottom + offset], 
                     outline=color
                 )
             
-            # Draw callout banner box
             draw.rectangle([left, top, min(left + 220, right), top + 28], fill=color)
-            
-            # Draw label text
             draw.text((left + 6, top + 6), f"#{idx+1}: {label}", fill="#FFFFFF")
 
     return annotated_img
+
+# =========================================================
+# HELPER FUNCTION: API CALL WITH RETRY AND MODEL FALLBACK
+# =========================================================
+def generate_content_with_retry(client, contents):
+    """Retries API call on 503/429 errors and falls back to alternate models if needed."""
+    candidate_models = ["gemini-3.5-flash", "gemini-1.5-flash"]
+    last_exception = None
+
+    for model_name in candidate_models:
+        for attempt in range(3):  # Retry up to 3 times per model
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents
+                )
+                return response
+            except Exception as e:
+                last_exception = e
+                err_msg = str(e)
+                # Check for rate limit or server capacity issues (503, 429)
+                if "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    time.sleep(2 * (attempt + 1))  # Exponential wait: 2s, 4s, 6s
+                    continue
+                else:
+                    raise e  # Fail immediately on authentication or non-transient errors
+
+    raise last_exception
 
 # =========================================================
 # SIDEBAR CONFIGURATION
@@ -102,7 +126,7 @@ if uploaded_file:
             if not api_key:
                 st.error("Please enter your Gemini API Key in the sidebar.")
             else:
-                with st.spinner("Analyzing layout spatial coordinates and generating visual report..."):
+                with st.spinner("Analyzing layout spatial coordinates and generating visual report (auto-retrying if servers are busy)..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         
@@ -129,8 +153,9 @@ if uploaded_file:
                         Ensure all newlines inside string values are properly escaped as \\n.
                         """
 
-                        response = client.models.generate_content(
-                            model='gemini-3.5-flash',
+                        # Call API with backoff & fallback
+                        response = generate_content_with_retry(
+                            client=client,
                             contents=[img, system_prompt]
                         )
                         
@@ -140,20 +165,17 @@ if uploaded_file:
                         cleaned_json = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE | re.MULTILINE)
                         cleaned_json = re.sub(r"\s*```$", "", cleaned_json, flags=re.MULTILINE).strip()
 
-                        # Parse JSON non-strictly to handle control characters
+                        # Parse JSON non-strictly
                         try:
                             data = json.loads(cleaned_json, strict=False)
                             highlights = data.get("highlights", [])
                             markdown_report = data.get("report_markdown", raw_text)
                         except Exception:
-                            # Fallback if raw JSON text cannot be parsed directly
                             highlights = []
                             markdown_report = raw_text
 
-                        # Annotate image with visual boxes if highlights exist
                         annotated_img = annotate_layout_image(img, highlights) if highlights else img
 
-                        # Render visual comparison and report
                         with image_container:
                             col1, col2 = st.columns([1, 1])
                             with col1:
@@ -168,7 +190,7 @@ if uploaded_file:
                         st.markdown(markdown_report)
 
                     except Exception as e:
-                        st.error(f"Audit processing error: {e}")
+                        st.error(f"Server is currently overloaded. Please wait 10 seconds and click 'Run Visual Layout Audit' again. Details: {e}")
 
     except Exception as e:
         st.error(f"Error loading uploaded layout file: {e}")
