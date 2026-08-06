@@ -18,10 +18,29 @@ st.title("📦 AI-Powered Sort Center Layout & Flow Auditor")
 st.caption("Automated industrial engineering CAD/PDF auditor for Material/Man Movement and Happy/Non-Happy Flows")
 
 # =========================================================
+# HELPER FUNCTION: RESIZE IMAGE TO SAVE INPUT TOKENS
+# =========================================================
+def optimize_image_for_api(image, max_dim=1280):
+    """
+    Resizes image to a max dimension to prevent exceeding Gemini Free Tier token limits.
+    Keeps high resolution internally while dramatically reducing API token payload.
+    """
+    w, h = image.size
+    if max(w, h) > max_dim:
+        if w > h:
+            new_w = max_dim
+            new_h = int(h * (max_dim / w))
+        else:
+            new_h = max_dim
+            new_w = int(w * (max_dim / h))
+        return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    return image.copy()
+
+# =========================================================
 # HELPER FUNCTION: DRAW ANNOTATIONS & BOUNDING BOXES
 # =========================================================
 def annotate_layout_image(image, highlights):
-    """Draws visual bounding boxes, highlight zones, and callout tags on the layout image."""
+    """Draws visual bounding boxes, highlight zones, and callout tags on the full-res layout image."""
     annotated_img = image.copy()
     draw = ImageDraw.Draw(annotated_img)
     w, h = image.size
@@ -59,10 +78,10 @@ def annotate_layout_image(image, highlights):
     return annotated_img
 
 # =========================================================
-# HELPER FUNCTION: AUTOMATED RETRY WITH LIVE COUNTDOWN
+# HELPER FUNCTION: API CALL WITH LIVE COUNTDOWN RETRY
 # =========================================================
 def generate_content_with_auto_retry(client, contents, status_placeholder):
-    """Executes API request and automatically handles rate limits with a live countdown timer."""
+    """Executes API request and handles rate limits with an automatic live countdown timer."""
     candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
     last_exception = None
 
@@ -78,29 +97,26 @@ def generate_content_with_auto_retry(client, contents, status_placeholder):
                 last_exception = e
                 err_msg = str(e)
                 
-                # Catch Rate Limits / Quota Exhaustion (429)
+                # Check for rate limit / token quota exceeded (429)
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_msg, re.IGNORECASE) or \
                             re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)s?", err_msg, re.IGNORECASE)
-                    wait_seconds = int(float(match.group(1))) + 2 if match else 20
+                    wait_seconds = int(float(match.group(1))) + 2 if match else 30
                     
                     # Live visual countdown timer
                     for remaining in range(wait_seconds, 0, -1):
                         status_placeholder.warning(
-                            f"⏳ **Free Tier Rate Limit Reached.** Auto-retrying in **{remaining} seconds**... "
-                            f"(Attempt {attempt + 1}/3)\n\n"
-                            f"*Tip: Attach billing to your API key in Google AI Studio to disable rate limits.*"
+                            f"⏳ **API Rate/Token Limit Triggered.** Auto-retrying in **{remaining} seconds**...\n\n"
+                            f"*Tip: Attach billing to your key in [Google AI Studio](https://aistudio.google.com/) to eliminate this delay entirely.*"
                         )
                         time.sleep(1)
                     
                     status_placeholder.empty()
-                    continue  # Retry call automatically
+                    continue  # Auto-retry call
                 
-                # Switch model if 404
                 elif "404" in err_msg or "NOT_FOUND" in err_msg:
                     break
                 
-                # Server busy (503)
                 elif "503" in err_msg or "UNAVAILABLE" in err_msg:
                     time.sleep(3)
                     continue
@@ -139,9 +155,9 @@ if uploaded_file:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             page = doc[0]
             pix = page.get_pixmap(dpi=200)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            full_res_img = Image.open(io.BytesIO(pix.tobytes("png")))
         else:
-            img = Image.open(io.BytesIO(file_bytes))
+            full_res_img = Image.open(io.BytesIO(file_bytes))
 
         image_container = st.container()
 
@@ -150,10 +166,13 @@ if uploaded_file:
                 st.error("Please enter your Gemini API Key in the sidebar.")
             else:
                 status_placeholder = st.empty()
-                with st.spinner("Auditing Material/Man Movement and Happy/Non-Happy Flows..."):
+                with st.spinner("Optimizing layout token footprint and analyzing flows..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         
+                        # Downscale copy specifically for API payload to stay well within free token limits
+                        api_optimized_img = optimize_image_for_api(full_res_img, max_dim=1280)
+
                         system_prompt = f"""
                         You are a Senior Supply Chain Industrial Engineer auditing a warehouse layout drawing.
                         
@@ -195,17 +214,15 @@ if uploaded_file:
 
                         response = generate_content_with_auto_retry(
                             client=client,
-                            contents=[img, system_prompt],
+                            contents=[api_optimized_img, system_prompt],
                             status_placeholder=status_placeholder
                         )
                         
                         raw_text = response.text.strip()
                         
-                        # Clean markdown code fence wrappers
                         cleaned_json = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE | re.MULTILINE)
                         cleaned_json = re.sub(r"\s*```$", "", cleaned_json, flags=re.MULTILINE).strip()
 
-                        # Parse JSON non-strictly
                         try:
                             data = json.loads(cleaned_json, strict=False)
                             highlights = data.get("highlights", [])
@@ -214,9 +231,9 @@ if uploaded_file:
                             highlights = []
                             markdown_report = raw_text
 
-                        annotated_img = annotate_layout_image(img, highlights) if highlights else img
+                        # Draw highlights on the FULL-RESOLUTION original image
+                        annotated_img = annotate_layout_image(full_res_img, highlights) if highlights else full_res_img
 
-                        # Save image to PNG byte buffer
                         img_byte_arr = io.BytesIO()
                         annotated_img.save(img_byte_arr, format='PNG')
                         annotated_bytes = img_byte_arr.getvalue()
@@ -228,7 +245,7 @@ if uploaded_file:
                                 st.image(annotated_img, use_container_width=True)
                                 
                                 st.download_button(
-                                    label="📥 Download Annotated Layout",
+                                    label="📥 Download High-Res Annotated Layout",
                                     data=annotated_bytes,
                                     file_name="audited_flow_layout.png",
                                     mime="image/png",
@@ -238,7 +255,7 @@ if uploaded_file:
                                 
                             with col2:
                                 st.subheader("📋 Original Blueprint")
-                                st.image(img, use_container_width=True)
+                                st.image(full_res_img, use_container_width=True)
 
                         st.markdown("---")
                         st.subheader("📊 Material & Man Movement Audit Report")
