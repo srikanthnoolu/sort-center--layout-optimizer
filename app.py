@@ -59,46 +59,53 @@ def annotate_layout_image(image, highlights):
     return annotated_img
 
 # =========================================================
-# HELPER FUNCTION: API CALL WITH RETRY AND RATE LIMIT PARSING
+# HELPER FUNCTION: AUTOMATED RETRY WITH LIVE COUNTDOWN
 # =========================================================
-class QuotaExceededException(Exception):
-    def __init__(self, wait_seconds):
-        self.wait_seconds = wait_seconds
-
-def generate_content_with_retry(client, contents):
-    """Executes API request, handling rate limits and model candidate switching gracefully."""
+def generate_content_with_auto_retry(client, contents, status_placeholder):
+    """Executes API request and automatically handles rate limits with a live countdown timer."""
     candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
     last_exception = None
 
     for model_name in candidate_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents
-            )
-            return response
-        except Exception as e:
-            last_exception = e
-            err_msg = str(e)
-            
-            # Catch Rate Limits / Quota Exhaustion (429)
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                # Extract wait time from error message (e.g., 'retry in 35.96s' or 'retryDelay: 35s')
-                match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_msg, re.IGNORECASE) or \
-                        re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)s?", err_msg, re.IGNORECASE)
-                wait_seconds = int(float(match.group(1))) + 2 if match else 35
-                raise QuotaExceededException(wait_seconds)
-            
-            # If model isn't found/supported (404), switch to next candidate model
-            elif "404" in err_msg or "NOT_FOUND" in err_msg:
-                continue
-            
-            # Server side overload (503), pause briefly and try next model
-            elif "503" in err_msg or "UNAVAILABLE" in err_msg:
-                time.sleep(3)
-                continue
-            else:
-                raise e
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents
+                )
+                return response
+            except Exception as e:
+                last_exception = e
+                err_msg = str(e)
+                
+                # Catch Rate Limits / Quota Exhaustion (429)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_msg, re.IGNORECASE) or \
+                            re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)s?", err_msg, re.IGNORECASE)
+                    wait_seconds = int(float(match.group(1))) + 2 if match else 20
+                    
+                    # Live visual countdown timer
+                    for remaining in range(wait_seconds, 0, -1):
+                        status_placeholder.warning(
+                            f"⏳ **Free Tier Rate Limit Reached.** Auto-retrying in **{remaining} seconds**... "
+                            f"(Attempt {attempt + 1}/3)\n\n"
+                            f"*Tip: Attach billing to your API key in Google AI Studio to disable rate limits.*"
+                        )
+                        time.sleep(1)
+                    
+                    status_placeholder.empty()
+                    continue  # Retry call automatically
+                
+                # Switch model if 404
+                elif "404" in err_msg or "NOT_FOUND" in err_msg:
+                    break
+                
+                # Server busy (503)
+                elif "503" in err_msg or "UNAVAILABLE" in err_msg:
+                    time.sleep(3)
+                    continue
+                else:
+                    raise e
 
     raise last_exception
 
@@ -142,6 +149,7 @@ if uploaded_file:
             if not api_key:
                 st.error("Please enter your Gemini API Key in the sidebar.")
             else:
+                status_placeholder = st.empty()
                 with st.spinner("Auditing Material/Man Movement and Happy/Non-Happy Flows..."):
                     try:
                         client = genai.Client(api_key=api_key)
@@ -185,9 +193,10 @@ if uploaded_file:
                         Ensure all newlines inside string values are properly escaped as \\n.
                         """
 
-                        response = generate_content_with_retry(
+                        response = generate_content_with_auto_retry(
                             client=client,
-                            contents=[img, system_prompt]
+                            contents=[img, system_prompt],
+                            status_placeholder=status_placeholder
                         )
                         
                         raw_text = response.text.strip()
@@ -234,14 +243,6 @@ if uploaded_file:
                         st.markdown("---")
                         st.subheader("📊 Material & Man Movement Audit Report")
                         st.markdown(markdown_report)
-
-                    except QuotaExceededException as qe:
-                        st.warning(
-                            f"⏳ **Free Tier Rate Limit Reached.**\n\n"
-                            f"Google's API requires a **{qe.wait_seconds}-second cool-down** period for image processing on the free tier.\n\n"
-                            f"**Action Required:** Please wait {qe.wait_seconds} seconds and click **'Run Flow & Layout Audit'** again.\n\n"
-                            f"*Tip: To remove rate limits entirely, enable Pay-As-You-Go on your key in [Google AI Studio](https://aistudio.google.com/).*"
-                        )
 
                     except Exception as e:
                         st.error(f"Error during layout processing: {e}")
