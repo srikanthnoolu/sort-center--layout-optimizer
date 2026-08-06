@@ -47,13 +47,15 @@ def annotate_layout_image(image, highlights):
 
             color = colors[idx % len(colors)]
             
+            # Thick bounding box (4px width)
             for offset in range(4):
                 draw.rectangle(
                     [left - offset, top - offset, right + offset, bottom + offset], 
                     outline=color
                 )
             
-            draw.rectangle([left, top, min(left + 220, right), top + 28], fill=color)
+            # Callout banner box & text label
+            draw.rectangle([left, top, min(left + 240, right), top + 28], fill=color)
             draw.text((left + 6, top + 6), f"#{idx+1}: {label}", fill="#FFFFFF")
 
     return annotated_img
@@ -77,12 +79,11 @@ def generate_content_with_retry(client, contents):
             except Exception as e:
                 last_exception = e
                 err_msg = str(e)
-                # Check for rate limit or server capacity issues (503, 429)
                 if "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    time.sleep(2 * (attempt + 1))  # Exponential wait: 2s, 4s, 6s
+                    time.sleep(2 * (attempt + 1))
                     continue
                 else:
-                    raise e  # Fail immediately on authentication or non-transient errors
+                    raise e
 
     raise last_exception
 
@@ -126,7 +127,7 @@ if uploaded_file:
             if not api_key:
                 st.error("Please enter your Gemini API Key in the sidebar.")
             else:
-                with st.spinner("Analyzing layout spatial coordinates and generating visual report (auto-retrying if servers are busy)..."):
+                with st.spinner("Analyzing layout spatial coordinates and generating visual report..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         
@@ -153,7 +154,6 @@ if uploaded_file:
                         Ensure all newlines inside string values are properly escaped as \\n.
                         """
 
-                        # Call API with backoff & fallback
                         response = generate_content_with_retry(
                             client=client,
                             contents=[img, system_prompt]
@@ -176,11 +176,27 @@ if uploaded_file:
 
                         annotated_img = annotate_layout_image(img, highlights) if highlights else img
 
+                        # Save image to PNG byte buffer for downloading
+                        img_byte_arr = io.BytesIO()
+                        annotated_img.save(img_byte_arr, format='PNG')
+                        annotated_bytes = img_byte_arr.getvalue()
+
                         with image_container:
                             col1, col2 = st.columns([1, 1])
                             with col1:
                                 st.subheader("🖼️ Visual Highlights")
                                 st.image(annotated_img, use_container_width=True)
+                                
+                                # High-Res Download Button
+                                st.download_button(
+                                    label="📥 Download Annotated High-Res Image",
+                                    data=annotated_bytes,
+                                    file_name="audited_layout_annotated.png",
+                                    mime="image/png",
+                                    type="secondary",
+                                    use_container_width=True
+                                )
+                                
                             with col2:
                                 st.subheader("📋 Original Layout")
                                 st.image(img, use_container_width=True)
@@ -190,7 +206,7 @@ if uploaded_file:
                         st.markdown(markdown_report)
 
                     except Exception as e:
-                        st.error(f"Server is currently overloaded. Please wait 10 seconds and click 'Run Visual Layout Audit' again. Details: {e}")
+                        st.error(f"Error during layout processing: {e}")
 
     except Exception as e:
         st.error(f"Error loading uploaded layout file: {e}")
