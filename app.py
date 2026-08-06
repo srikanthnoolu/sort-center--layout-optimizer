@@ -59,11 +59,12 @@ def annotate_layout_image(image, highlights):
     return annotated_img
 
 # =========================================================
-# HELPER FUNCTION: API CALL WITH RETRY AND FALLBACK
+# HELPER FUNCTION: API CALL WITH RETRY AND MODEL FALLBACK
 # =========================================================
 def generate_content_with_retry(client, contents):
-    """Retries API call on transient errors and falls back to alternate models."""
-    candidate_models = ["gemini-3.5-flash", "gemini-1.5-flash"]
+    """Retries API call on transient errors (503, 429) and falls back to alternate model candidates."""
+    # Active high-performance model candidates
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
     last_exception = None
 
     for model_name in candidate_models:
@@ -77,7 +78,12 @@ def generate_content_with_retry(client, contents):
             except Exception as e:
                 last_exception = e
                 err_msg = str(e)
-                if "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                
+                # If model is not found/deprecated (404), skip to next candidate immediately
+                if "404" in err_msg or "NOT_FOUND" in err_msg:
+                    break
+                # Retry on transient server capacity or rate errors (503, 429)
+                elif "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
                     time.sleep(2 * (attempt + 1))
                     continue
                 else:
