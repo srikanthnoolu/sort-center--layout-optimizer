@@ -14,8 +14,8 @@ st.set_page_config(
     page_icon="📦"
 )
 
-st.title("📦 AI-Powered Sort Center Layout & Visual Compliance Auditor")
-st.caption("Automated industrial engineering CAD/PDF auditor with visual spatial highlighting")
+st.title("📦 AI-Powered Sort Center Layout & Flow Auditor")
+st.caption("Automated industrial engineering CAD/PDF auditor for Material/Man Movement and Happy/Non-Happy Flows")
 
 # =========================================================
 # HELPER FUNCTION: DRAW ANNOTATIONS & BOUNDING BOXES
@@ -27,15 +27,15 @@ def annotate_layout_image(image, highlights):
     w, h = image.size
 
     colors = [
-        "#FF3333",  # Red - Violations / Bottlenecks
-        "#FF9900",  # Orange - Buffers & Clearances
-        "#3399FF",  # Blue - Pathways & Transit Nodes
-        "#33CC33",  # Green - Compliance & Correct Zones
-        "#9933FF"   # Purple - Specialized Streams
+        "#FF3333",  # Red - Flow Conflict / Bottleneck
+        "#FF9900",  # Orange - Man/Material Intersection
+        "#3399FF",  # Blue - Happy Flow Node
+        "#33CC33",  # Green - Compliance Area
+        "#9933FF"   # Purple - Non-Happy / Exception Stream
     ]
 
     for idx, item in enumerate(highlights):
-        box = item.get("box_2d", [])  # Expected [ymin, xmin, ymax, xmax] in 0-1000 scale
+        box = item.get("box_2d", [])  # [ymin, xmin, ymax, xmax] in 0-1000 scale
         label = item.get("label", f"Zone #{idx+1}")
         
         if len(box) == 4:
@@ -47,29 +47,27 @@ def annotate_layout_image(image, highlights):
 
             color = colors[idx % len(colors)]
             
-            # Thick bounding box (4px width)
             for offset in range(4):
                 draw.rectangle(
                     [left - offset, top - offset, right + offset, bottom + offset], 
                     outline=color
                 )
             
-            # Callout banner box & text label
             draw.rectangle([left, top, min(left + 240, right), top + 28], fill=color)
             draw.text((left + 6, top + 6), f"#{idx+1}: {label}", fill="#FFFFFF")
 
     return annotated_img
 
 # =========================================================
-# HELPER FUNCTION: API CALL WITH RETRY AND MODEL FALLBACK
+# HELPER FUNCTION: API CALL WITH RETRY AND FALLBACK
 # =========================================================
 def generate_content_with_retry(client, contents):
-    """Retries API call on 503/429 errors and falls back to alternate models if needed."""
+    """Retries API call on transient errors and falls back to alternate models."""
     candidate_models = ["gemini-3.5-flash", "gemini-1.5-flash"]
     last_exception = None
 
     for model_name in candidate_models:
-        for attempt in range(3):  # Retry up to 3 times per model
+        for attempt in range(3):
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -98,9 +96,9 @@ with st.sidebar:
     building_levels = st.selectbox("Building Structure:", ["Single Level (Ground Floor)", "Multi-Level (Ground + G+1 Mezzanine)"])
     
     st.subheader("Active Operational Streams")
-    b2c_smalls = st.checkbox("B2C Non-Large (Smalls)", value=True)
+    b2c_smalls = st.checkbox("B2C Non-Large (Smalls & Bags)", value=True)
     b2c_volumetric = st.checkbox("B2C Volumetric / Semi-Large", value=True)
-    b2c_large = st.checkbox("B2C Large / Heavy", value=True)
+    b2c_large = st.checkbox("B2C Large / Heavy (Non-Conveyable)", value=True)
     b2b_stream = st.checkbox("B2B Direct Stream", value=True)
     reverse_stream = st.checkbox("Reverse & Fraud Screening", value=True)
 
@@ -123,11 +121,11 @@ if uploaded_file:
 
         image_container = st.container()
 
-        if st.button("🚀 Run Visual Layout Audit", type="primary"):
+        if st.button("🚀 Run Flow & Layout Audit", type="primary"):
             if not api_key:
                 st.error("Please enter your Gemini API Key in the sidebar.")
             else:
-                with st.spinner("Analyzing layout spatial coordinates and generating visual report..."):
+                with st.spinner("Auditing Material/Man Movement and Happy/Non-Happy Flows..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         
@@ -137,19 +135,35 @@ if uploaded_file:
                         FACILITY CONTEXT: {facility_type} ({building_levels})
                         ACTIVE STREAMS: Smalls ({b2c_smalls}), Volumetric ({b2c_volumetric}), Large ({b2c_large}), B2B ({b2b_stream}), Reverse ({reverse_stream}).
                         
-                        EVALUATE THE DIAGRAM AGAINST THESE OPERATIONAL RULES:
-                        1. REVERSE LOGISTICS: Inbound Reverse -> Bag-by-Bag -> Dual Split (8ft pathway to X-Ray/FSM vs Direct FSM) -> Secondary PTL.
-                        2. DOCK CLEARANCES: TBC 32ft trucks require 20 FT clear depth behind dock doors.
-                        3. AISLES: 10 FT Bag pathways, 8 FT Shipment pathways, 10 FT Heavy HPT Highways.
-                        4. STAGING & VERTICAL NODES: 7x7 FT grids with 10 FT cross-aisles every 6-10 grids; 15x15 FT landing grids at vertical lifts.
+                        EVALUATE THE BLUEPRINT AGAINST THESE PROCESS & FLOW RULES:
+
+                        1. DOCK & BAG SORTATION (FORWARD FLOW):
+                           - Inbound Non-Large/Smalls bags go directly from Unloading Docks to a Forward Bag Sortation & Debagging Area.
+                           - TBC (Telescopic Conveyor) Docks require 20 FT clear depth behind dock doors.
+                           - Non-Conveyable/Large items must bypass the Bag Sortation area directly upon unloading.
+
+                        2. MATERIAL MOVEMENT (FORWARD vs EXCEPTION):
+                           - Happy Flow: Inbound Dock -> Bag Sortation -> CBS Induction -> CBS Sorter -> Outbound Chutes -> Staging -> Outbound Dock.
+                           - Non-Happy Flows: Check separation for No-Read/Reject Chutes, CBS Recirculation, and dedicated Reverse Logistics/Fraud Screening zones.
+                           - Path Widths: Main Bag pathways >= 10 FT; Shipment pathways >= 8 FT; Heavy HPT highways >= 10 FT.
+
+                        3. MAN (HUMAN) MOVEMENT & SAFETY:
+                           - Pedestrian/operator walkways must NOT cross high-speed MHE or Forklift highways.
+                           - Minimum 1.2m (4 FT) maintenance perimeter around CBS loop.
+                           - Minimum 1.8m (6 FT) workstation depth for induction and bag-sorting operators.
+                           - Crossover bridges with stairs must exist for any island isolated inside a sorter loop.
 
                         IMPORTANT INSTRUCTION:
                         Return a JSON object with:
-                        1. "highlights": List of up to 5 spatial locations for bottlenecks, TBC violations, vertical node congestion, or reverse flow areas.
+                        1. "highlights": List of up to 5 spatial locations for Flow Violations, Man/Material Crossings, Chute Bottlenecks, or Incorrect Stream Merges.
                            Each item MUST have:
                            - "box_2d": [ymin, xmin, ymax, xmax] normalized on a 0-1000 scale.
-                           - "label": Short 2-4 word description (e.g. "TBC Buffer Breach", "Reverse Bag Area").
-                        2. "report_markdown": Standard Markdown string covering Key Metrics, Bottlenecks, Reverse Flow Analysis, and Recommendations.
+                           - "label": Short 2-4 word description (e.g. "Man/Material Crossing", "Forward Bag Congestion", "Non-Happy Re-run Block").
+                        2. "report_markdown": Standard Markdown string structured as follows:
+                           - ## 1. Material Movement Analysis (Happy vs Non-Happy Path Continuity)
+                           - ## 2. Man Movement & Ergonomics (Safety, Walkways, MHE Separation)
+                           - ## 3. Forward Bag Sortation & CBS Integration Audit
+                           - ## 4. Critical Flow Bottlenecks & Recommendations
 
                         Ensure all newlines inside string values are properly escaped as \\n.
                         """
@@ -176,7 +190,7 @@ if uploaded_file:
 
                         annotated_img = annotate_layout_image(img, highlights) if highlights else img
 
-                        # Save image to PNG byte buffer for downloading
+                        # Save image to PNG byte buffer
                         img_byte_arr = io.BytesIO()
                         annotated_img.save(img_byte_arr, format='PNG')
                         annotated_bytes = img_byte_arr.getvalue()
@@ -184,25 +198,24 @@ if uploaded_file:
                         with image_container:
                             col1, col2 = st.columns([1, 1])
                             with col1:
-                                st.subheader("🖼️ Visual Highlights")
+                                st.subheader("🖼️ Flow & Bottleneck Highlights")
                                 st.image(annotated_img, use_container_width=True)
                                 
-                                # High-Res Download Button
                                 st.download_button(
-                                    label="📥 Download Annotated High-Res Image",
+                                    label="📥 Download Annotated Layout",
                                     data=annotated_bytes,
-                                    file_name="audited_layout_annotated.png",
+                                    file_name="audited_flow_layout.png",
                                     mime="image/png",
                                     type="secondary",
                                     use_container_width=True
                                 )
                                 
                             with col2:
-                                st.subheader("📋 Original Layout")
+                                st.subheader("📋 Original Blueprint")
                                 st.image(img, use_container_width=True)
 
                         st.markdown("---")
-                        st.subheader("📊 Engineering Audit Report")
+                        st.subheader("📊 Material & Man Movement Audit Report")
                         st.markdown(markdown_report)
 
                     except Exception as e:
